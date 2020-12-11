@@ -1,0 +1,114 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*.
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+library(httr)
+library(data.table)
+library(glmnet) # family=binomial(link=’logit).
+
+
+train_csv <- GET("https://storage.googleapis.com/tf-datasets/titanic/train.csv")
+test_csv <- GET("https://storage.googleapis.com/tf-datasets/titanic/eval.csv")
+
+# Save to file -> https://stackoverflow.com/questions/60714074/download-csv-file-from-github-using-httr-get-request
+bin <- content(train_csv, "raw")
+writeBin(bin, "train_csv.csv")
+# Read as csv
+train_df = read.csv("train_csv.csv", header = TRUE, dec = ",")
+
+bin <- content(test_csv, "raw")
+writeBin(bin, "test_csv.csv")
+# Read as csv
+test_df = read.csv("test_csv.csv", header = TRUE, dec = ",")
+head(train_df)
+
+```
+```{r}
+library(lambda.r)
+cols <- colnames(train_df)
+features <- cols[cols != 'survived']
+#features
+X_train = train_df[,features]
+y_train = train_df[,'survived']
+head(X_train)
+```
+```{r}
+library(PreProcess)
+# https://stackoverflow.com/questions/15215457/standardize-data-columns-in-r -> standardization nor normalization
+X_train[, c('age', 'n_siblings_spouses', 'fare')] <- sapply(X_train[, c('age','n_siblings_spouses','fare')], as.numeric)
+
+X_train[, c('age', 'n_siblings_spouses', 'fare')] <- scale(X_train[, c('age','n_siblings_spouses','fare')])
+head(X_train)
+
+```
+https://medium.com/@nsethi610/data-cleaning-scale-and-normalize-data-4a7c781dd628#:~:text=Scaling%20just%20changes%20the%20range,described%20as%20a%20normal%20distribution.&text=But%20after%20normalizing%20it%20looks,hence%20%E2%80%9Cbell%20curve%E2%80%9D).
+
+Scaling just changes the range of your data. Normalization is a more radical transformation. The point of normalization is to change your observations so that they can be described as a normal distribution. ... But after normalizing it looks more like the outline of a bell (hence “bell curve”)
+```{r}
+# http://www.sthda.com/english/articles/36-classification-methods-essentials/149-penalized-logistic-regression-essentials-in-r-ridge-lasso-and-elastic-net/
+library(caret)
+
+
+ohe_feats = c('sex','class','deck','embark_town','alone')
+X_train.categoric_feats <- setDT(X_train[, c('sex','class','deck','embark_town','alone')])
+
+#https://stackoverflow.com/questions/48649443/how-to-one-hot-encode-several-categorical-variables-in-r
+dmy <- caret::dummyVars(" ~ .", data = X_train.categoric_feats)
+trsf <- data.frame(predict(dmy, newdata = X_train.categoric_feats))
+
+X_train <- setDT(X_train)
+X_train[, c('sex','class','deck','embark_town','alone'):=NULL]  # remove two columns
+
+# must be a much smoother way to do this. Purely creating the column for the following join.
+X_train[,'index'] <- 1:nrow(X_train)
+trsf[,'index'] <- 1:nrow(X_train)
+
+#head(X_train.encoded)
+X_train.encoded <- merge(X_train, trsf, by='index', all=TRUE)
+X_train.encoded[,'index':=NULL]
+```
+https://stats.stackexchange.com/questions/46692/how-the-na-values-are-treated-in-glm-in-r
+
+NA Handling: You can control how glm handles missing data. glm() has an argument na.action which indicates which of the following generic functions should be used by glm to handle NA in the data:
+
+na.omit and na.exclude: observations are removed if they contain any missing values; if na.exclude is used some functions will pad residuals and predictions to the correct length by inserting NAs for omitted cases.
+na.pass: keep all data, including NAs
+na.fail: returns the object only if it contains no missing values
+
+```{r}
+library(glmnet)
+
+#in R : Check glm for generalised linear regression for usual logistic
+#regression ( family=binomial(link=’logit)).
+#in R: Check glmnet for penalised regression (for ridge α = 0, in R
+#alpha is to specify if it is ridge, lasso or elasticnet).
+
+#regression ( family=binomial(link=’logit)
+#glmnet expects a matrix not a data.table -> https://stackoverflow.com/questions/8457624/r-glmnet-list-object-cannot-be-coerced-to-type-double
+
+X_train.encoded.matrix <- as.matrix(X_train.encoded)
+
+
+# The glmnet() function has an alpha argument that determines what type of model is fit. If alpha = 0 then a ridge regression model is fit, and if alpha = 1 then a lasso model is fit. We first fit a ridge regression model:
+
+# http://www.science.smith.edu/~jcrouser/SDS293/labs/lab10-r.html
+
+# glmnet can deal with the sparsity of the data. Worth checking if sklearn can.
+# By default the glmnet() function performs ridge regression for an automatically selected range of  λ  values.
+model.lasso <- glmnet(X_train.encoded.matrix, y_train, family = binomial(link='logit'), alpha = 1, lambda = NULL, na.action = na.omit)
+model.ridge <- glmnet(X_train.encoded.matrix, y_train, family = binomial(link='logit'), alpha = 0, lambda = NULL, na.action = na.omit)
+#coef(model)
+plot(model.lasso) # more coefficients that are very close to 0 -> these have a very minimal impact on the cost function when squared, larger when absolute.
+plot(model.ridge)
